@@ -523,6 +523,32 @@
                         </div>
                     </div>
                 </div>
+                
+                <!-- Screw Holes -->
+                <div class="form-group" style="margin-top: 12px;">
+                    <label for="screwHoles" data-tooltip="Add mounting holes. 2 holes: left/right center. 4 holes: corners.">Screw Holes</label>
+                    <select id="screwHoles">
+                        <option value="0">None</option>
+                        <option value="2">2 holes (left/right)</option>
+                        <option value="4">4 holes (corners)</option>
+                    </select>
+                </div>
+                <div class="form-row" id="screwHoleSettings" style="display: none;">
+                    <div class="form-group">
+                        <label for="screwHoleDiameter" data-tooltip="Diameter of the screw holes.">Hole Diameter</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="screwHoleDiameter" value="3" min="1" max="10" step="0.5">
+                            <span class="unit">mm</span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="screwHoleEdgeDistance" data-tooltip="Distance from edge to hole center.">Edge Distance</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="screwHoleEdgeDistance" value="3" min="1" max="20" step="0.5">
+                            <span class="unit">mm</span>
+                        </div>
+                    </div>
+                </div>
             </div>
             
             <!-- Build Plate Section -->
@@ -547,6 +573,10 @@
                             <span class="unit">mm</span>
                         </div>
                     </div>
+                </div>
+                <div class="checkbox-group" id="consistentFontSizeGroup" style="display: none;">
+                    <input type="checkbox" id="consistentFontSize">
+                    <label for="consistentFontSize" data-tooltip="Use the same font size for all labels (based on the longest text). Ensures uniform appearance across all labels.">Consistent font size</label>
                 </div>
             </div>
             
@@ -787,7 +817,11 @@
                 separateBody: document.getElementById('separateBody').checked,
                 usePlate: document.getElementById('usePlate').checked,
                 plateWidth: parseFloat(document.getElementById('plateWidth').value),
-                plateHeight: parseFloat(document.getElementById('plateHeight').value)
+                plateHeight: parseFloat(document.getElementById('plateHeight').value),
+                consistentFontSize: document.getElementById('consistentFontSize').checked,
+                screwHoles: parseInt(document.getElementById('screwHoles').value),
+                screwHoleDiameter: parseFloat(document.getElementById('screwHoleDiameter').value),
+                screwHoleEdgeDistance: parseFloat(document.getElementById('screwHoleEdgeDistance').value)
             };
         }
         
@@ -1145,13 +1179,29 @@
             // Build plate toggle
             const usePlateCheckbox = document.getElementById('usePlate');
             const plateSettings = document.getElementById('plateSettings');
+            const consistentFontSizeGroup = document.getElementById('consistentFontSizeGroup');
             
             function updatePlateSettingsVisibility() {
-                plateSettings.style.display = usePlateCheckbox.checked ? 'grid' : 'none';
+                const isPlateEnabled = usePlateCheckbox.checked;
+                plateSettings.style.display = isPlateEnabled ? 'grid' : 'none';
+                consistentFontSizeGroup.style.display = isPlateEnabled ? 'flex' : 'none';
                 update2DPreview(document.getElementById('labelText').value);
             }
             
             usePlateCheckbox.addEventListener('change', updatePlateSettingsVisibility);
+            updatePlateSettingsVisibility();
+            
+            // Screw holes toggle
+            const screwHolesSelect = document.getElementById('screwHoles');
+            const screwHoleSettings = document.getElementById('screwHoleSettings');
+            
+            function updateScrewHoleSettingsVisibility() {
+                const holes = parseInt(screwHolesSelect.value);
+                screwHoleSettings.style.display = holes > 0 ? 'grid' : 'none';
+            }
+            
+            screwHolesSelect.addEventListener('change', updateScrewHoleSettingsVisibility);
+            updateScrewHoleSettingsVisibility();
             
             // Update 2D preview when plate/label size changes
             ['plateWidth', 'plateHeight', 'labelWidth', 'labelHeight', 'cornerRadius'].forEach(id => {

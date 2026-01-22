@@ -229,9 +229,19 @@ def wrap_text(text, max_width, font_size):
     return lines if lines else [text]
 
 
-def calculate_auto_font_size(text, label_width, label_height, margin, line_wrap=False):
-    """Calculate font size to fit text within label dimensions."""
-    available_width = label_width - 2 * margin
+def calculate_auto_font_size(text, label_width, label_height, margin, line_wrap=False, margin_horizontal=None):
+    """Calculate font size to fit text within label dimensions.
+    
+    Args:
+        text: Text to fit
+        label_width: Label width in mm
+        label_height: Label height in mm
+        margin: Default margin (used for top/bottom, and left/right if margin_horizontal is None)
+        line_wrap: Enable line wrapping
+        margin_horizontal: Optional separate horizontal margin (for screw hole clearance)
+    """
+    h_margin = margin_horizontal if margin_horizontal is not None else margin
+    available_width = label_width - 2 * h_margin
     available_height = label_height - 2 * margin
     
     if line_wrap:
@@ -262,7 +272,10 @@ def create_label(
     margin=2.0,
     line_wrap=False,
     subtract_text=False,
-    separate_body=True
+    separate_body=True,
+    screw_holes=0,
+    screw_hole_diameter=3.0,
+    screw_hole_edge_distance=3.0
 ):
     """
     Create a 3D label with text.
@@ -283,6 +296,9 @@ def create_label(
         line_wrap: Enable line wrapping
         subtract_text: If True, subtract text from plate; if False, extrude on top
         separate_body: Keep text as separate body
+        screw_holes: Number of screw holes (0, 2, or 4)
+        screw_hole_diameter: Diameter of screw holes in mm
+        screw_hole_edge_distance: Distance from edge to hole center in mm
     
     Returns:
         CadQuery assembly or workplane object
@@ -306,12 +322,48 @@ def create_label(
     else:
         plate = cq.Workplane("XY").box(width, height, thickness)
     
+    # Add screw holes if requested
+    if screw_holes in [2, 4]:
+        hole_radius = screw_hole_diameter / 2
+        edge_dist = screw_hole_edge_distance
+        
+        if screw_holes == 2:
+            # 2 holes: left and right, vertically centered
+            hole_positions = [
+                (-width/2 + edge_dist, 0),  # Left center
+                (width/2 - edge_dist, 0),   # Right center
+            ]
+        else:  # 4 holes
+            # 4 holes: in the corners
+            hole_positions = [
+                (-width/2 + edge_dist, -height/2 + edge_dist),  # Bottom-left
+                (width/2 - edge_dist, -height/2 + edge_dist),   # Bottom-right
+                (-width/2 + edge_dist, height/2 - edge_dist),   # Top-left
+                (width/2 - edge_dist, height/2 - edge_dist),    # Top-right
+            ]
+        
+        # Create all holes at once using pushPoints
+        plate = (
+            plate
+            .faces(">Z")
+            .workplane(centerOption="CenterOfBoundBox")
+            .pushPoints(hole_positions)
+            .circle(hole_radius)
+            .cutThruAll()
+        )
+    
     if not text or not text.strip():
         return plate
     
     # Calculate font size if auto
+    # For screw holes, use double edge distance as horizontal margin to avoid text overlap
+    if screw_holes in [2, 4]:
+        margin_horizontal = max(margin, screw_hole_edge_distance * 2)
+    else:
+        margin_horizontal = margin
+    
     if auto_size or font_size is None:
-        font_size = calculate_auto_font_size(text, width, height, margin, line_wrap)
+        font_size = calculate_auto_font_size(text, width, height, margin, line_wrap, margin_horizontal)
     
     # Ensure text depth doesn't exceed thickness
     text_depth = min(text_depth, thickness - 0.1)
@@ -398,6 +450,7 @@ def arrange_labels_on_plate(
     plate_width,
     plate_height,
     spacing=0.5,
+    consistent_font_size=False,
     **label_kwargs
 ):
     """
@@ -410,6 +463,7 @@ def arrange_labels_on_plate(
         plate_width: Build plate width
         plate_height: Build plate height
         spacing: Space between labels (default 0.5mm)
+        consistent_font_size: Use same font size for all labels (based on longest text)
         **label_kwargs: Additional arguments for create_label
     
     Returns:
@@ -433,6 +487,25 @@ def arrange_labels_on_plate(
     if cols < 1 or rows < 1:
         return None, f"Label size ({label_width}x{label_height}mm) too large for plate ({plate_width}x{plate_height}mm)"
     
+    # Calculate consistent font size if requested (based on longest text)
+    fixed_font_size = None
+    if consistent_font_size and label_kwargs.get("auto_size", True):
+        longest_text = max(texts, key=len)
+        margin = label_kwargs.get("margin", 2.0)
+        line_wrap = label_kwargs.get("line_wrap", False)
+        
+        # Calculate horizontal margin for screw holes
+        screw_holes = label_kwargs.get("screw_holes", 0)
+        screw_hole_edge_distance = label_kwargs.get("screw_hole_edge_distance", 3.0)
+        if screw_holes in [2, 4]:
+            margin_horizontal = max(margin, screw_hole_edge_distance * 2)
+        else:
+            margin_horizontal = margin
+        
+        fixed_font_size = calculate_auto_font_size(
+            longest_text, label_width, label_height, margin, line_wrap, margin_horizontal
+        )
+    
     assembly = cq.Assembly()
     
     # Calculate starting position (center the grid)
@@ -449,11 +522,17 @@ def arrange_labels_on_plate(
         x = start_x + col * (label_width + spacing)
         y = start_y - row * (label_height + spacing)
         
+        # Override font size if consistent sizing is enabled
+        create_kwargs = label_kwargs.copy()
+        if fixed_font_size is not None:
+            create_kwargs["font_size"] = fixed_font_size
+            create_kwargs["auto_size"] = False
+        
         label = create_label(
             text=text,
             width=label_width,
             height=label_height,
-            **label_kwargs
+            **create_kwargs
         )
         
         if label is not None:
@@ -709,6 +788,10 @@ def _extract_label_params(data):
         "use_plate": data.get("usePlate", False),
         "plate_width": float(data.get("plateWidth", 200)),
         "plate_height": float(data.get("plateHeight", 200)),
+        "consistent_font_size": data.get("consistentFontSize", False),
+        "screw_holes": int(data.get("screwHoles", 0)),
+        "screw_hole_diameter": float(data.get("screwHoleDiameter", 3)),
+        "screw_hole_edge_distance": float(data.get("screwHoleEdgeDistance", 3)),
     }
     return params
 
@@ -728,6 +811,7 @@ def _generate_model_from_params(params):
             label_height=params["height"],
             plate_width=params["plate_width"],
             plate_height=params["plate_height"],
+            consistent_font_size=params["consistent_font_size"],
             thickness=params["thickness"],
             corner_radius=params["corner_radius"],
             font_name=params["font_name"],
@@ -739,7 +823,10 @@ def _generate_model_from_params(params):
             margin=params["margin"],
             line_wrap=params["line_wrap"],
             subtract_text=params["subtract_text"],
-            separate_body=params["separate_body"]
+            separate_body=params["separate_body"],
+            screw_holes=params["screw_holes"],
+            screw_hole_diameter=params["screw_hole_diameter"],
+            screw_hole_edge_distance=params["screw_hole_edge_distance"]
         )
         if error:
             return None, error
@@ -759,7 +846,10 @@ def _generate_model_from_params(params):
             margin=params["margin"],
             line_wrap=params["line_wrap"],
             subtract_text=params["subtract_text"],
-            separate_body=params["separate_body"]
+            separate_body=params["separate_body"],
+            screw_holes=params["screw_holes"],
+            screw_hole_diameter=params["screw_hole_diameter"],
+            screw_hole_edge_distance=params["screw_hole_edge_distance"]
         )
         error = None
     

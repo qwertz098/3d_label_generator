@@ -10,11 +10,18 @@
   - Materialstaerke
   - Eckenradius
   - optional Druckplattengröße
+- [x] Schraublöcher zur Befestigung:
+  - Option: keine, 2 oder 4 Löcher
+  - 2 Löcher: links und rechts mittig
+  - 4 Löcher: in den Ecken
+  - Parameter: Randabstand und Durchmesser
+  - [x] Auto-Size Font: Seitenrand = 2x Loch-Randabstand (Text überlappt nicht mit Löchern)
 
 ## Eingabe Text
     - bei mehreren mit ";" getrennten texten sollen mehrere Schilder pro Druckplatte (Maße oben) im selben Modell erstellt werden und innerhalb der Platte bleiben, sonst fehlermeldung
     - dazu sollen mehrere Schilder neben und untereinander angeordnet werden, bis die maximalen Druckmaße erreicht werden
     - Abstand der Schilder 0,5mm
+- [x] Konsistente Schriftgröße bei Plate-Arrangements (basierend auf längstem Text)
 
 ## Schriftparameter
 - Schriftart konfigurierbar.

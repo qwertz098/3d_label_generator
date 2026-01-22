@@ -47,3 +47,6 @@ Thumbs.db
 # Local config
 .env
 .env.local
+
+# Notes
+hosting_options.txt
