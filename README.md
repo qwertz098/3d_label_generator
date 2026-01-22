@@ -2,6 +2,8 @@
 
 Web-based application for creating customizable 3D labels with CadQuery and Three.js.
 
+![3D Label Generator Screenshot](Screenshot.png)
+
 ## Features
 
 - **Customizable Labels**: Configure width, height, thickness, corner radius
