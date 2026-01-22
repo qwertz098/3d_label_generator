@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  label-generator:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./exports:/app/exports
+      - ./fonts:/app/fonts
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
