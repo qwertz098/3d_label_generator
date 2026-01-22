@@ -1,6 +1,11 @@
 # 3D Label Generator - Docker Configuration
 FROM python:3.11-slim
 
+# OCI Labels for container metadata
+LABEL org.opencontainers.image.source="https://github.com/qwertz098/3d_label_generator"
+LABEL org.opencontainers.image.description="Web-based 3D label generator with CadQuery and Three.js"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Install system dependencies for CadQuery and font rendering
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \

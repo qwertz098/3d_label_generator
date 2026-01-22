@@ -62,8 +62,11 @@ Open your browser at: http://localhost:5000
 ## Docker
 
 ```bash
-# Build the container
+# Build from local files
 docker build -t 3d-label-generator .
+
+# Or build directly from GitHub
+docker build -t 3d-label-generator https://github.com/qwertz098/3d_label_generator.git
 
 # Run the container
 docker run -p 5000:5000 3d-label-generator
