@@ -1,6 +1,8 @@
 # 3D Label Generator
 
-Web-based application for creating customizable 3D labels with CadQuery and Three.js.
+Web-based application for creating customizable 3D labels. Made with CadQuery and Three.js.
+
+Try out [here](https://huggingface.co/spaces/KristianKrause/3d-label-generator).
 
 ![3D Label Generator Screenshot](Screenshot.png)
 
