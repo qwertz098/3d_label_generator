@@ -25,7 +25,12 @@ from app import (
     _extract_label_params,
     _generate_model_from_params,
     _model_cache,
+    _get_qr_info,
+    get_qr_matrix,
+    qr_matrix_to_rects,
+    get_qr_layout,
     CADQUERY_AVAILABLE,
+    QR_AVAILABLE,
     EXPORTS_DIR,
     FONTS_DIR
 )
@@ -1009,6 +1014,109 @@ class TestFontSystem(unittest.TestCase):
         print(f"[OK] Tested {len(widths)} fonts")
 
 
+class TestQRCode(unittest.TestCase):
+    """Tests for the optional QR code."""
+    
+    @unittest.skipUnless(QR_AVAILABLE, "segno not installed")
+    def test_rects_cover_dark_modules_exactly(self):
+        """Test that merged rectangles cover exactly the dark modules."""
+        matrix = get_qr_matrix("https://example.com/item/42")
+        covered = [[0] * len(row) for row in matrix]
+        for col, row, w, h in qr_matrix_to_rects(matrix):
+            for r in range(row, row + h):
+                for c in range(col, col + w):
+                    covered[r][c] += 1
+        for r, row in enumerate(matrix):
+            for c, dark in enumerate(row):
+                self.assertEqual(covered[r][c], 1 if dark else 0)
+        print("[OK] QR rectangles match module matrix")
+    
+    def test_qr_layout_left_and_right(self):
+        """Test QR placement and remaining text area."""
+        left = get_qr_layout(80, 30, 2, 2, None, "left")
+        self.assertAlmostEqual(left["qr_size"], 26)
+        self.assertAlmostEqual(left["qr_x"], -25)
+        self.assertAlmostEqual(left["text_width"], 52)
+        self.assertGreater(left["text_x"], 0)
+        
+        right = get_qr_layout(80, 30, 2, 2, 20, "right")
+        self.assertAlmostEqual(right["qr_size"], 20)
+        self.assertAlmostEqual(right["qr_x"], 28)
+        self.assertLess(right["text_x"], 0)
+        print("[OK] QR layout calculated correctly")
+    
+    def test_qr_size_limited_to_label(self):
+        """Test that a too large QR size is limited to the label height."""
+        layout = get_qr_layout(80, 30, 2, 2, 100, "left")
+        self.assertAlmostEqual(layout["qr_size"], 26)
+        print("[OK] QR size limited")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery/segno not installed")
+    def test_label_with_qr_separate_body(self):
+        """Test that the QR code is a separate body next to the text."""
+        label = create_label("Kabel 42", width=80, height=30, qr_enabled=True,
+                             qr_content="https://example.com")
+        self.assertIsInstance(label, cq.Assembly)
+        self.assertIn("qr", label.objects)
+        qr_box = label.objects["qr"].obj.val().BoundingBox()
+        text_box = label.objects["text"].obj.val().BoundingBox()
+        self.assertLess(qr_box.xmax, text_box.xmin)
+        self.assertAlmostEqual(qr_box.zmin, 1.0, places=3)
+        print("[OK] QR code created as separate body")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery/segno not installed")
+    def test_label_with_qr_modes(self):
+        """Test QR code in all text modes."""
+        for subtract in [False, True]:
+            for separate in [False, True]:
+                label = create_label("Test", width=60, height=25, qr_enabled=True,
+                                     qr_content="QR", subtract_text=subtract,
+                                     separate_body=separate)
+                self.assertIsNotNone(label)
+        print("[OK] QR code works in all text modes")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery/segno not installed")
+    def test_qr_disabled_by_default(self):
+        """Test that no QR code is added unless enabled."""
+        label = create_label("Test", qr_content="https://example.com")
+        self.assertNotIn("qr", label.objects)
+        print("[OK] QR code off by default")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery/segno not installed")
+    def test_qr_only_label(self):
+        """Test a label with QR code but without text."""
+        label = create_label("", qr_enabled=True, qr_content="https://example.com")
+        self.assertIn("qr", label.objects)
+        self.assertNotIn("text", label.objects)
+        print("[OK] QR-only label created")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery/segno not installed")
+    def test_qr_per_label_on_plate(self):
+        """Test one QR code per label on a build plate."""
+        assembly, error = arrange_labels_on_plate(
+            "A;B", 50, 25, 200, 200, qr_enabled=True, qr_content="1;2"
+        )
+        self.assertIsNone(error)
+        self.assertIn("qr_0", assembly.objects)
+        self.assertIn("qr_1", assembly.objects)
+        print("[OK] QR codes on plate created")
+    
+    @unittest.skipUnless(QR_AVAILABLE, "segno not installed")
+    def test_qr_info(self):
+        """Test QR info for the UI and the default content."""
+        params = _extract_label_params({"text": "Hello", "width": 80, "height": 30,
+                                        "qrEnabled": True})
+        info, error = _get_qr_info(params)
+        self.assertIsNone(error)
+        self.assertEqual(info["size"], 26)
+        self.assertAlmostEqual(info["module_size"], 26 / info["modules"], places=2)
+        
+        params = _extract_label_params({"qrEnabled": True, "qrContent": "x" * 5000})
+        info, error = _get_qr_info(params)
+        self.assertIsNotNone(error)
+        print("[OK] QR info and overflow error")
+
+
 def run_tests():
     """Run all tests and print summary."""
     print("=" * 60)
@@ -1033,6 +1141,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestExport))
     suite.addTests(loader.loadTestsFromTestCase(TestModelCaching))
     suite.addTests(loader.loadTestsFromTestCase(TestFontSystem))
+    suite.addTests(loader.loadTestsFromTestCase(TestQRCode))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)
