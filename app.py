@@ -275,7 +275,9 @@ def create_label(
     separate_body=True,
     screw_holes=0,
     screw_hole_diameter=3.0,
-    screw_hole_edge_distance=3.0
+    screw_hole_edge_distance=3.0,
+    double_sided=False,
+    back_text=None
 ):
     """
     Create a 3D label with text.
@@ -299,6 +301,8 @@ def create_label(
         screw_holes: Number of screw holes (0, 2, or 4)
         screw_hole_diameter: Diameter of screw holes in mm
         screw_hole_edge_distance: Distance from edge to hole center in mm
+        double_sided: Also put text on the back side (mirrored so it reads correctly from behind)
+        back_text: Text for the back side (None or empty uses the front text)
     
     Returns:
         CadQuery assembly or workplane object
@@ -352,87 +356,124 @@ def create_label(
             .cutThruAll()
         )
     
-    if not text or not text.strip():
+    if double_sided and not (back_text and back_text.strip()):
+        back_text = text
+    
+    has_front = bool(text and text.strip())
+    has_back = bool(double_sided and back_text and back_text.strip())
+    
+    if not has_front and not has_back:
         return plate
     
-    # Calculate font size if auto
     # For screw holes, use double edge distance as horizontal margin to avoid text overlap
     if screw_holes in [2, 4]:
         margin_horizontal = max(margin, screw_hole_edge_distance * 2)
     else:
         margin_horizontal = margin
     
-    if auto_size or font_size is None:
-        font_size = calculate_auto_font_size(text, width, height, margin, line_wrap, margin_horizontal)
-    
     # Ensure text depth doesn't exceed thickness
-    text_depth = min(text_depth, thickness - 0.1)
+    # (engraving on both sides must not cut through the plate)
+    if has_back and subtract_text:
+        text_depth = min(text_depth, (thickness - 0.1) / 2)
+    else:
+        text_depth = min(text_depth, thickness - 0.1)
     
     # Get font name for CadQuery (fonts are registered with OCP on startup)
     font_path = get_font_path(font_name, bold, italic)
     
-    # Handle line wrapping
-    if line_wrap:
-        lines = wrap_text(text, width - 2 * margin, font_size)
-    else:
-        lines = [text]
-    
-    # Calculate total text block height
-    line_height = font_size * 1.2
-    total_text_height = len(lines) * line_height
-    
-    # Starting Y position (center the text block)
-    start_y = total_text_height / 2 - line_height / 2
-    
-    # Create text objects
-    text_objects = []
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
+    def build_text(side_text):
+        """Build text solid spanning z = 0..text_depth, centered in XY."""
+        if auto_size or font_size is None:
+            side_font_size = calculate_auto_font_size(side_text, width, height, margin, line_wrap, margin_horizontal)
+        else:
+            side_font_size = font_size
         
-        y_pos = start_y - i * line_height
+        # Handle line wrapping
+        if line_wrap:
+            lines = wrap_text(side_text, width - 2 * margin, side_font_size)
+        else:
+            lines = [side_text]
         
-        try:
-            text_wp = (
-                cq.Workplane("XY")
-                .text(
-                    line,
-                    fontsize=font_size,
-                    distance=text_depth,
-                    font=font_path,
-                    halign="center",
-                    valign="center"
+        # Calculate total text block height
+        line_height = side_font_size * 1.2
+        total_text_height = len(lines) * line_height
+        
+        # Starting Y position (center the text block)
+        start_y = total_text_height / 2 - line_height / 2
+        
+        # Create text objects
+        text_objects = []
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            
+            y_pos = start_y - i * line_height
+            
+            try:
+                text_wp = (
+                    cq.Workplane("XY")
+                    .text(
+                        line,
+                        fontsize=side_font_size,
+                        distance=text_depth,
+                        font=font_path,
+                        halign="center",
+                        valign="center"
+                    )
+                    .translate((0, y_pos, 0))
                 )
-                .translate((0, y_pos, thickness / 2 if not subtract_text else thickness / 2 - text_depth))
-            )
-            text_objects.append(text_wp)
-        except Exception as e:
-            print(f"Error creating text '{line}': {e}")
-            # Fallback: create simple placeholder
-            continue
+                text_objects.append(text_wp)
+            except Exception as e:
+                print(f"Error creating text '{line}': {e}")
+                # Fallback: create simple placeholder
+                continue
+        
+        if not text_objects:
+            return None
+        
+        # Combine all text objects
+        combined = text_objects[0]
+        for txt in text_objects[1:]:
+            combined = combined.union(txt)
+        return combined
     
-    if not text_objects:
+    text_parts = []
+    
+    if has_front:
+        front = build_text(text)
+        if front is not None:
+            z = thickness / 2 if not subtract_text else thickness / 2 - text_depth
+            text_parts.append(("text", front.translate((0, 0, z))))
+    
+    if has_back:
+        back = build_text(back_text)
+        if back is not None:
+            # Flip around the Y axis so the text reads correctly when the label
+            # is turned over left-to-right; z = 0..d becomes z = -d..0
+            back = back.rotate((0, 0, 0), (0, 1, 0), 180)
+            z = -thickness / 2 if not subtract_text else -thickness / 2 + text_depth
+            text_parts.append(("text_back", back.translate((0, 0, z))))
+    
+    if not text_parts:
         return plate
     
-    # Combine all text objects
-    combined_text = text_objects[0]
-    for txt in text_objects[1:]:
-        combined_text = combined_text.union(txt)
+    combined_text = text_parts[0][1]
+    for _, part in text_parts[1:]:
+        combined_text = combined_text.union(part)
     
     if separate_body:
         # Return as assembly with separate bodies
         assembly = cq.Assembly()
-        assembly.add(plate, name="plate", color=cq.Color(0.83, 0.83, 0.83))  # lightgray
         
         if subtract_text:
             # Cut text into plate, text is separate (embedded)
-            plate_with_cut = plate.cut(combined_text)
-            assembly = cq.Assembly()
-            assembly.add(plate_with_cut, name="plate", color=cq.Color(0.83, 0.83, 0.83))  # lightgray
-            assembly.add(combined_text, name="text", color=cq.Color(1.0, 0.5, 0.0))  # orange
+            assembly.add(plate.cut(combined_text), name="plate", color=cq.Color(0.83, 0.83, 0.83))  # lightgray
         else:
             # Text on top of plate
-            assembly.add(combined_text, name="text", color=cq.Color(1.0, 0.5, 0.0))  # orange
+            assembly.add(plate, name="plate", color=cq.Color(0.83, 0.83, 0.83))  # lightgray
+        
+        for name, part in text_parts:
+            assembly.add(part, name=name, color=cq.Color(1.0, 0.5, 0.0))  # orange
         
         return assembly
     else:
@@ -451,6 +492,7 @@ def arrange_labels_on_plate(
     plate_height,
     spacing=0.5,
     consistent_font_size=False,
+    back_texts=None,
     **label_kwargs
 ):
     """
@@ -464,6 +506,9 @@ def arrange_labels_on_plate(
         plate_height: Build plate height
         spacing: Space between labels (default 0.5mm)
         consistent_font_size: Use same font size for all labels (based on longest text)
+        back_texts: Back side texts (list or semicolon-separated string), matched to texts
+            by position; missing entries fall back to the front text. Only used if
+            double_sided is set in label_kwargs.
         **label_kwargs: Additional arguments for create_label
     
     Returns:
@@ -474,6 +519,10 @@ def arrange_labels_on_plate(
     
     if not texts:
         return None, "No text provided"
+    
+    if isinstance(back_texts, str):
+        back_texts = [t.strip() for t in back_texts.split(";")]
+    back_texts = back_texts or []
     
     # Calculate how many labels fit
     cols = int((plate_width + spacing) / (label_width + spacing))
@@ -490,7 +539,10 @@ def arrange_labels_on_plate(
     # Calculate consistent font size if requested (based on longest text)
     fixed_font_size = None
     if consistent_font_size and label_kwargs.get("auto_size", True):
-        longest_text = max(texts, key=len)
+        candidates = list(texts)
+        if label_kwargs.get("double_sided"):
+            candidates += [t for t in back_texts if t]
+        longest_text = max(candidates, key=len)
         margin = label_kwargs.get("margin", 2.0)
         line_wrap = label_kwargs.get("line_wrap", False)
         
@@ -532,6 +584,7 @@ def arrange_labels_on_plate(
             text=text,
             width=label_width,
             height=label_height,
+            back_text=back_texts[i] if i < len(back_texts) else None,
             **create_kwargs
         )
         
@@ -792,6 +845,8 @@ def _extract_label_params(data):
         "screw_holes": int(data.get("screwHoles", 0)),
         "screw_hole_diameter": float(data.get("screwHoleDiameter", 3)),
         "screw_hole_edge_distance": float(data.get("screwHoleEdgeDistance", 3)),
+        "double_sided": data.get("doubleSided", False),
+        "back_text": data.get("backText", ""),
     }
     return params
 
@@ -812,6 +867,7 @@ def _generate_model_from_params(params):
             plate_width=params["plate_width"],
             plate_height=params["plate_height"],
             consistent_font_size=params["consistent_font_size"],
+            back_texts=params["back_text"],
             thickness=params["thickness"],
             corner_radius=params["corner_radius"],
             font_name=params["font_name"],
@@ -826,7 +882,8 @@ def _generate_model_from_params(params):
             separate_body=params["separate_body"],
             screw_holes=params["screw_holes"],
             screw_hole_diameter=params["screw_hole_diameter"],
-            screw_hole_edge_distance=params["screw_hole_edge_distance"]
+            screw_hole_edge_distance=params["screw_hole_edge_distance"],
+            double_sided=params["double_sided"]
         )
         if error:
             return None, error
@@ -849,7 +906,9 @@ def _generate_model_from_params(params):
             separate_body=params["separate_body"],
             screw_holes=params["screw_holes"],
             screw_hole_diameter=params["screw_hole_diameter"],
-            screw_hole_edge_distance=params["screw_hole_edge_distance"]
+            screw_hole_edge_distance=params["screw_hole_edge_distance"],
+            double_sided=params["double_sided"],
+            back_text=params["back_text"]
         )
         error = None
     

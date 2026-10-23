@@ -482,6 +482,17 @@
                     <p class="help-text">Use semicolon (;) to create multiple labels</p>
                 </div>
                 
+                <div class="checkbox-group">
+                    <input type="checkbox" id="doubleSided">
+                    <label for="doubleSided" data-tooltip="Also put text on the back side. It is mirrored so it reads correctly when the label is turned over. Tip: engraved text prints without supports on both sides.">Double-sided (text on back)</label>
+                </div>
+                
+                <div class="form-group" id="backTextGroup" style="display: none;">
+                    <label for="backText">Back Text</label>
+                    <textarea id="backText" placeholder="Text for the back side (empty = same as front)"></textarea>
+                    <p class="help-text">Prefilled with the front text. With multiple labels, use ; in the same order as the front.</p>
+                </div>
+                
                 <div class="preview-2d">
                     <div id="preview2d"></div>
                     <div class="preview-2d-info" id="preview2dInfo"></div>
@@ -821,7 +832,9 @@
                 consistentFontSize: document.getElementById('consistentFontSize').checked,
                 screwHoles: parseInt(document.getElementById('screwHoles').value),
                 screwHoleDiameter: parseFloat(document.getElementById('screwHoleDiameter').value),
-                screwHoleEdgeDistance: parseFloat(document.getElementById('screwHoleEdgeDistance').value)
+                screwHoleEdgeDistance: parseFloat(document.getElementById('screwHoleEdgeDistance').value),
+                doubleSided: document.getElementById('doubleSided').checked,
+                backText: document.getElementById('backText').value
             };
         }
         
@@ -1151,9 +1164,36 @@
         document.addEventListener('DOMContentLoaded', () => {
             initThreeJS();
             
+            // Double-sided toggle: back text follows the front text until edited
+            const doubleSidedCheckbox = document.getElementById('doubleSided');
+            const backTextGroup = document.getElementById('backTextGroup');
+            const backTextInput = document.getElementById('backText');
+            let backTextEdited = false;
+            
+            function syncBackText() {
+                if (!backTextEdited) {
+                    backTextInput.value = document.getElementById('labelText').value;
+                }
+            }
+            
+            function updateBackTextVisibility() {
+                backTextGroup.style.display = doubleSidedCheckbox.checked ? 'block' : 'none';
+                if (doubleSidedCheckbox.checked) syncBackText();
+            }
+            
+            doubleSidedCheckbox.addEventListener('change', updateBackTextVisibility);
+            updateBackTextVisibility();
+            
+            backTextInput.addEventListener('input', () => {
+                backTextEdited = backTextInput.value !== '';
+                clearTimeout(updateTimeout);
+                updateTimeout = setTimeout(updatePreview, 1000);
+            });
+            
             // Update 2D preview on text change
             document.getElementById('labelText').addEventListener('input', (e) => {
                 update2DPreview(e.target.value);
+                if (doubleSidedCheckbox.checked) syncBackText();
                 
                 // Debounce 3D preview update - wait 1 second after last keystroke
                 clearTimeout(updateTimeout);
