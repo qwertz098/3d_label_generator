@@ -302,6 +302,13 @@
             color: var(--error);
         }
         
+        .status-message.warning {
+            display: block;
+            background: rgba(245, 158, 11, 0.2);
+            border: 1px solid #f59e0b;
+            color: #f59e0b;
+        }
+        
         .status-message.success {
             display: block;
             background: rgba(34, 197, 94, 0.2);
@@ -696,6 +703,9 @@
         let meshGroup = null;
         let wireframeMode = false;
         let updateTimeout = null;
+        let previewController = null;
+        let gridHelper = null;
+        let lastFitKey = null;
         
         function initThreeJS() {
             const canvas = document.getElementById('preview-canvas');
@@ -736,10 +746,8 @@
             directionalLight2.position.set(-50, -50, 50);
             scene.add(directionalLight2);
             
-            // Grid helper
-            const gridHelper = new THREE.GridHelper(200, 20, 0x444444, 0x333333);
-            gridHelper.rotation.x = Math.PI / 2;
-            scene.add(gridHelper);
+            // Grid helper (resized to the model in fitCameraToModel)
+            setGridSize(200);
             
             // Axis helper
             const axesHelper = new THREE.AxesHelper(30);
@@ -768,10 +776,56 @@
             renderer.render(scene, camera);
         }
         
+        function setGridSize(size) {
+            if (gridHelper) {
+                scene.remove(gridHelper);
+                gridHelper.geometry.dispose();
+                gridHelper.material.dispose();
+            }
+            // 10 mm per grid cell
+            gridHelper = new THREE.GridHelper(size, Math.round(size / 10), 0x444444, 0x333333);
+            gridHelper.rotation.x = Math.PI / 2;
+            scene.add(gridHelper);
+        }
+        
+        // Zoom the camera onto the model. With onlyIfChanged, the view the user has
+        // set up is kept as long as the model's footprint stays the same.
+        function fitCameraToModel(onlyIfChanged = false) {
+            if (!meshGroup || meshGroup.children.length === 0) return;
+            
+            const box = new THREE.Box3().setFromObject(meshGroup);
+            if (box.isEmpty()) return;
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            
+            const fitKey = [center.x, center.y, size.x, size.y].map(v => Math.round(v)).join(',');
+            if (onlyIfChanged && fitKey === lastFitKey) return;
+            lastFitKey = fitKey;
+            
+            // Distance at which the model's bounding sphere fits the vertical field of view
+            const radius = size.length() / 2;
+            const fov = THREE.MathUtils.degToRad(camera.fov);
+            const fitFov = camera.aspect < 1 ? 2 * Math.atan(Math.tan(fov / 2) * camera.aspect) : fov;
+            const distance = Math.max(radius / Math.sin(fitFov / 2) * 1.1, 20);
+            
+            camera.near = distance / 100;
+            camera.far = distance * 100;
+            const direction = new THREE.Vector3(0, -80, 60).normalize();
+            camera.position.copy(center).addScaledVector(direction, distance);
+            camera.updateProjectionMatrix();
+            controls.target.copy(center);
+            controls.minDistance = distance / 20;
+            controls.maxDistance = distance * 10;
+            controls.update();
+            
+            // Grid around the model; it stays smaller than the camera distance so the
+            // camera always looks at it from outside
+            const gridSize = Math.max(40, Math.ceil(Math.max(size.x, size.y) * 1.5 / 20) * 20);
+            setGridSize(gridSize);
+        }
+        
         function resetCamera() {
-            camera.position.set(0, -80, 60);
-            camera.lookAt(0, 0, 0);
-            controls.reset();
+            fitCameraToModel();
         }
         
         function toggleWireframe() {
@@ -789,13 +843,27 @@
             document.getElementById('loadingOverlay').classList.toggle('active', show);
         }
         
-        function showStatus(message, isError = false) {
+        let statusTimeout = null;
+        
+        // type: 'success' (hides after 5 s), 'warning' or 'error' (stay until replaced),
+        // or true/false for error/success
+        function showStatus(message, type = 'success') {
+            if (type === true) type = 'error';
+            if (type === false) type = 'success';
             const el = document.getElementById('statusMessage');
+            clearTimeout(statusTimeout);
             el.textContent = message;
-            el.className = 'status-message ' + (isError ? 'error' : 'success');
-            setTimeout(() => {
-                el.className = 'status-message';
-            }, 5000);
+            el.className = 'status-message ' + type;
+            if (type === 'success') {
+                statusTimeout = setTimeout(() => {
+                    el.className = 'status-message';
+                }, 5000);
+            }
+        }
+        
+        function clearStatus() {
+            clearTimeout(statusTimeout);
+            document.getElementById('statusMessage').className = 'status-message';
         }
         
         function getFormData() {
@@ -826,21 +894,34 @@
         }
         
         async function updatePreview() {
+            // Only the newest request may update the preview: abort the previous one,
+            // otherwise a slow older response can overwrite a newer model
+            if (previewController) previewController.abort();
+            const controller = new AbortController();
+            previewController = controller;
             showLoading(true);
             
             try {
                 const response = await fetch('/api/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(getFormData())
+                    body: JSON.stringify(getFormData()),
+                    signal: controller.signal
                 });
                 
                 const data = await response.json();
+                if (controller !== previewController) return;
                 
                 if (data.error) {
                     showStatus(data.error, true);
                     showLoading(false);
                     return;
+                }
+                
+                if (data.warning) {
+                    showStatus(data.warning, 'warning');
+                } else {
+                    clearStatus();
                 }
                 
                 // Remove old mesh
@@ -920,9 +1001,11 @@
                 }
                 
                 scene.add(meshGroup);
+                fitCameraToModel(true);
                 showLoading(false);
                 
             } catch (error) {
+                if (error.name === 'AbortError') return;
                 console.error('Preview error:', error);
                 showStatus('Failed to generate preview: ' + error.message, true);
                 showLoading(false);
