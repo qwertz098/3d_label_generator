@@ -86,6 +86,14 @@ The Docker image includes:
 - Automatic font registration with OpenCASCADE
 - Health check endpoint at `/api/status`
 
+### CI/CD (GitHub Container Registry)
+
+`.github/workflows/docker-ghcr.yml` runs the tests and then builds the image and pushes it to `ghcr.io/qwertz098/3d_label_generator`. It is not activated yet: it only runs when started by hand under Actions > "CI/CD (GHCR)" > "Run workflow". To run it automatically on pushes to `main`, version tags (`v*`) and pull requests, uncomment the `push` and `pull_request` triggers at the top of the workflow. Pull requests only build the image and never push it.
+
+```bash
+docker pull ghcr.io/qwertz098/3d_label_generator:latest
+```
+
 ## Usage
 
 1. **Enter Text**: Type your label text (use `;` to create multiple labels)
