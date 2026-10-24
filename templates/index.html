@@ -368,6 +368,13 @@
         }
         
         
+        .preview-2d-qr {
+            flex-shrink: 0;
+            background: repeating-conic-gradient(#1e293b 0 25%, #f8fafc 0 50%) 0 0 / 28.6% 28.6%;
+            border: 2px solid #1e293b;
+            border-radius: 1px;
+        }
+        
         .preview-2d-info {
             width: 100%;
             text-align: center;
@@ -503,6 +510,52 @@
                 <div class="preview-2d">
                     <div id="preview2d"></div>
                     <div class="preview-2d-info" id="preview2dInfo"></div>
+                </div>
+            </div>
+            
+            <!-- QR Code Section -->
+            <div class="section">
+                <div class="section-title">QR Code</div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="qrEnabled">
+                    <label for="qrEnabled" data-tooltip="Add a QR code to the label. The text is placed next to it.">Add QR code</label>
+                </div>
+                <div id="qrSettings" style="display: none;">
+                    <div class="form-group">
+                        <label for="qrContent" data-tooltip="Text or URL encoded in the QR code. Leave empty to encode the label text. With multiple labels, use ; to give each label its own QR code.">QR Content</label>
+                        <input type="text" id="qrContent" placeholder="https://... (empty = label text)">
+                        <p class="help-text">Use semicolon (;) for one QR code per label</p>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="qrPosition">Position</label>
+                            <select id="qrPosition">
+                                <option value="left">Left</option>
+                                <option value="right">Right</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="qrErrorCorrection" data-tooltip="Higher levels tolerate more damage but need more modules (smaller details).">Error Correction</label>
+                            <select id="qrErrorCorrection">
+                                <option value="L">L (7%)</option>
+                                <option value="M" selected>M (15%)</option>
+                                <option value="Q">Q (25%)</option>
+                                <option value="H">H (30%)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="qrAutoSize" checked>
+                        <label for="qrAutoSize" data-tooltip="Use the full label height minus margins for the QR code.">Auto-size QR code</label>
+                    </div>
+                    <div class="form-group" id="qrSizeGroup" style="display: none;">
+                        <label for="qrSize">QR Size</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="qrSize" value="15" min="5" max="500" step="1">
+                            <span class="unit">mm</span>
+                        </div>
+                    </div>
+                    <p class="help-text" id="qrInfo">QR modules use the text depth and text mode. Use a contrasting color for reliable scanning.</p>
                 </div>
             </div>
             
@@ -901,6 +954,12 @@
                 screwHoles: parseInt(document.getElementById('screwHoles').value),
                 screwHoleDiameter: parseFloat(document.getElementById('screwHoleDiameter').value),
                 screwHoleEdgeDistance: parseFloat(document.getElementById('screwHoleEdgeDistance').value),
+                qrEnabled: document.getElementById('qrEnabled').checked,
+                qrContent: document.getElementById('qrContent').value,
+                qrAutoSize: document.getElementById('qrAutoSize').checked,
+                qrSize: parseFloat(document.getElementById('qrSize').value),
+                qrPosition: document.getElementById('qrPosition').value,
+                qrErrorCorrection: document.getElementById('qrErrorCorrection').value,
                 doubleSided: document.getElementById('doubleSided').checked,
                 backText: document.getElementById('backText').value
             };
@@ -1014,6 +1073,7 @@
                 }
                 
                 scene.add(meshGroup);
+                updateQrInfo(data.qr);
                 fitCameraToModel(true);
                 showLoading(false);
                 
@@ -1024,6 +1084,33 @@
                 showLoading(false);
                 createPlaceholderMesh();
             }
+        }
+        
+        function updateQrInfo(qr) {
+            const el = document.getElementById('qrInfo');
+            if (!qr) {
+                el.textContent = 'QR modules use the text depth and text mode. Use a contrasting color for reliable scanning.';
+                el.style.color = '';
+                return;
+            }
+            el.textContent = `${qr.modules}×${qr.modules} modules, ${qr.size} mm, ${qr.module_size} mm per module`;
+            if (qr.module_size < 0.8) {
+                el.textContent += ' ⚠ modules below 0.8 mm may not scan reliably when printed. Use a larger QR code, shorter content or a lower error correction.';
+                el.style.color = '#f59e0b';
+            } else {
+                el.style.color = '';
+            }
+        }
+        
+        function qrPreviewHtml(scaledLabelW, scaledLabelH, scale) {
+            if (!document.getElementById('qrEnabled').checked) return '';
+            const margin = (parseFloat(document.getElementById('margin').value) || 0) * scale;
+            const autoSize = document.getElementById('qrAutoSize').checked;
+            const maxSize = Math.min(scaledLabelH - 2 * margin, scaledLabelW - 2 * margin);
+            let size = autoSize ? maxSize : (parseFloat(document.getElementById('qrSize').value) || 0) * scale;
+            size = Math.max(2, Math.min(size, maxSize));
+            const order = document.getElementById('qrPosition').value === 'right' ? 2 : 0;
+            return `<div class="preview-2d-qr" style="width:${size}px;height:${size}px;margin:0 ${margin}px;order:${order};"></div>`;
         }
         
         function createPlaceholderMesh() {
@@ -1151,7 +1238,8 @@
                 
                 for (let i = 0; i < Math.min(labels.length, maxLabels); i++) {
                     html += `<div class="preview-2d-label" style="width:${scaledLabelW}px;height:${scaledLabelH}px;border-radius:${scaledRadius}px;">
-                        <span class="preview-2d-label-text" style="font-size:${fontSize}px;font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};">${escapeHtml(labels[i])}</span>
+                        ${qrPreviewHtml(scaledLabelW, scaledLabelH, scale)}
+                        <span class="preview-2d-label-text" style="flex:1;order:1;font-size:${fontSize}px;font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};">${escapeHtml(labels[i])}</span>
                     </div>`;
                 }
                 
@@ -1178,7 +1266,8 @@
                 const showLabels = labels.slice(0, 4); // Show max 4 labels in simple view
                 for (const label of showLabels) {
                     html += `<div class="preview-2d-label" style="width:${scaledLabelW}px;height:${scaledLabelH}px;border-radius:${scaledRadius}px;">
-                        <span class="preview-2d-label-text" style="font-size:${fontSize}px;font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};">${escapeHtml(label)}</span>
+                        ${qrPreviewHtml(scaledLabelW, scaledLabelH, scale)}
+                        <span class="preview-2d-label-text" style="flex:1;order:1;font-size:${fontSize}px;font-family:${fontFamily};font-weight:${fontWeight};font-style:${fontStyle};">${escapeHtml(label)}</span>
                     </div>`;
                 }
                 
@@ -1326,8 +1415,22 @@
             screwHolesSelect.addEventListener('change', updateScrewHoleSettingsVisibility);
             updateScrewHoleSettingsVisibility();
             
+            // QR code toggles
+            const qrEnabledCheckbox = document.getElementById('qrEnabled');
+            const qrAutoSizeCheckbox = document.getElementById('qrAutoSize');
+            
+            function updateQrSettingsVisibility() {
+                document.getElementById('qrSettings').style.display = qrEnabledCheckbox.checked ? 'block' : 'none';
+                document.getElementById('qrSizeGroup').style.display = qrAutoSizeCheckbox.checked ? 'none' : 'block';
+                update2DPreview(document.getElementById('labelText').value);
+            }
+            
+            qrEnabledCheckbox.addEventListener('change', updateQrSettingsVisibility);
+            qrAutoSizeCheckbox.addEventListener('change', updateQrSettingsVisibility);
+            updateQrSettingsVisibility();
+            
             // Update 2D preview when plate/label size changes
-            ['plateWidth', 'plateHeight', 'labelWidth', 'labelHeight', 'cornerRadius'].forEach(id => {
+            ['plateWidth', 'plateHeight', 'labelWidth', 'labelHeight', 'cornerRadius', 'margin', 'qrSize', 'qrPosition'].forEach(id => {
                 document.getElementById(id).addEventListener('change', () => {
                     update2DPreview(document.getElementById('labelText').value);
                 });
