@@ -61,6 +61,8 @@ python app.py
 
 Open your browser at: http://localhost:5000
 
+For development, enable Flask's debugger and auto-reload with `FLASK_DEBUG=1` (Linux/Mac: `FLASK_DEBUG=1 python app.py`, Windows: `set FLASK_DEBUG=1`). Never enable it on a publicly reachable server.
+
 ## Docker
 
 ```bash

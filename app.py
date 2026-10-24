@@ -200,6 +200,41 @@ def get_font_path(font_name, bold=False, italic=False):
     return "arial.ttf"
 
 
+# Cache of measured text widths per (text, font) at a 1mm font size
+_text_width_cache = {}
+
+
+def measure_text_width(text, font_size, font=None):
+    """Return the rendered width of a single line of text in mm.
+
+    Measures the real glyph outlines with CadQuery when a font is given.
+    Text width scales linearly with font size, so each (text, font) pair is
+    measured once and cached. Falls back to an estimate of 0.6 * font_size
+    per character if CadQuery or the font is not available.
+    """
+    if not text.strip():
+        return 0.0
+    if not CADQUERY_AVAILABLE or font is None:
+        return len(text) * font_size * 0.6
+
+    key = (text, font)
+    if key not in _text_width_cache:
+        try:
+            bb = (
+                cq.Workplane("XY")
+                .text(text, 10.0, 0.1, font=font, halign="center", valign="center")
+                .val()
+                .BoundingBox()
+            )
+            width_per_mm = bb.xlen / 10.0
+        except Exception:
+            width_per_mm = len(text) * 0.6
+        if len(_text_width_cache) > 5000:
+            _text_width_cache.clear()
+        _text_width_cache[key] = width_per_mm
+    return _text_width_cache[key] * font_size
+
+
 def calculate_text_dimensions(text, font_size, font_path):
     """Estimate text dimensions based on font size."""
     # Approximate character width as 0.6 * font_size for sans-serif
@@ -209,21 +244,15 @@ def calculate_text_dimensions(text, font_size, font_path):
     return text_width, text_height
 
 
-def wrap_text(text, max_width, font_size):
-    """Wrap text to fit within max_width."""
-    char_width = font_size * 0.6
-    max_chars = int(max_width / char_width)
-    
-    if max_chars <= 0:
-        return [text]
-    
+def wrap_text(text, max_width, font_size, font=None):
+    """Wrap text to fit within max_width (measured with the given font)."""
     words = text.split()
     lines = []
     current_line = ""
     
     for word in words:
         test_line = f"{current_line} {word}".strip()
-        if len(test_line) <= max_chars:
+        if measure_text_width(test_line, font_size, font) <= max_width:
             current_line = test_line
         else:
             if current_line:
@@ -236,8 +265,8 @@ def wrap_text(text, max_width, font_size):
     return lines if lines else [text]
 
 
-def calculate_auto_font_size(text, label_width, label_height, margin, line_wrap=False, margin_horizontal=None):
-    """Calculate font size to fit text within label dimensions.
+def calculate_auto_font_size(text, label_width, label_height, margin, line_wrap=False, margin_horizontal=None, font=None):
+    """Calculate the largest font size that fits text within label dimensions.
     
     Args:
         text: Text to fit
@@ -246,22 +275,78 @@ def calculate_auto_font_size(text, label_width, label_height, margin, line_wrap=
         margin: Default margin (used for top/bottom, and left/right if margin_horizontal is None)
         line_wrap: Enable line wrapping
         margin_horizontal: Optional separate horizontal margin (for screw hole clearance)
+        font: Registered font name used to measure the text (estimate if None)
     """
     h_margin = margin_horizontal if margin_horizontal is not None else margin
     available_width = label_width - 2 * h_margin
     available_height = label_height - 2 * margin
+    max_size = max(available_height * 0.8, 1.0)
     
-    if line_wrap:
-        # For wrapped text, start with a reasonable size and adjust
-        font_size = min(available_height * 0.8, available_width * 0.15)
+    if not text or not text.strip() or available_width <= 0:
+        return max(min(max_size, 10.0), 1.0)
+    
+    if not line_wrap:
+        # Single line: width scales linearly with font size
+        width_at_1mm = measure_text_width(text, 1.0, font)
+        font_size = available_width / width_at_1mm if width_at_1mm > 0 else max_size
+        return max(min(font_size, max_size), 1.0)  # Minimum 1mm
+    
+    # Wrapped text: shrink until all lines fit in width and the block fits in height
+    font_size = max_size
+    while font_size > 1.0:
+        lines = wrap_text(text, available_width, font_size, font)
+        widest = max(measure_text_width(line, font_size, font) for line in lines)
+        block_height = (len(lines) - 1) * font_size * 1.2 + font_size
+        if widest <= available_width and block_height <= available_height:
+            return font_size
+        font_size *= 0.95
+    return 1.0  # Minimum 1mm
+
+
+def check_text_fits(params):
+    """Return a warning message if the text does not fit on the label, else None.
+
+    Only relevant for a fixed font size; auto-size always fits (down to 1mm).
+    """
+    if params.get("auto_size", True) or not params.get("font_size"):
+        return None
+    
+    font = get_font_path(params["font_name"], params["bold"], params["italic"])
+    font_size = params["font_size"]
+    margin = params["margin"]
+    if params["screw_holes"] in [2, 4]:
+        h_margin = max(margin, params["screw_hole_edge_distance"] * 2)
     else:
-        # Single line: fit to width
-        char_count = len(text) if text else 1
-        font_size = available_width / (char_count * 0.6)
-        # Don't exceed height
-        font_size = min(font_size, available_height * 0.8)
+        h_margin = margin
+    text_width = params["width"]
+    if params.get("qr_enabled"):
+        # QR code takes one side of the label, text only gets the remaining width
+        text_width = get_qr_layout(
+            params["width"], params["height"], margin, h_margin,
+            params["qr_size"], params["qr_position"]
+        )["text_width"]
+    available_width = text_width - 2 * h_margin
+    available_height = params["height"] - 2 * margin
     
-    return max(font_size, 1.0)  # Minimum 1mm
+    if params["use_plate"]:
+        texts = [t.strip() for t in params["text"].split(";") if t.strip()]
+    else:
+        texts = [params["text"]] if params["text"].strip() else []
+    
+    for text in texts:
+        if params["line_wrap"]:
+            lines = wrap_text(text, available_width, font_size, font)
+        else:
+            lines = [text]
+        widest = max(measure_text_width(line, font_size, font) for line in lines)
+        block_height = (len(lines) - 1) * font_size * 1.2 + font_size
+        if widest > available_width + 0.01 or block_height > available_height + 0.01:
+            return (
+                f"Text '{text}' does not fit the label at {font_size:g}mm "
+                f"(needs {widest:.1f} x {block_height:.1f}mm, "
+                f"available {available_width:.1f} x {available_height:.1f}mm)"
+            )
+    return None
 
 
 def get_qr_matrix(content, error_correction="M"):
@@ -509,16 +594,16 @@ def create_label(
     if not text or not text.strip():
         return _combine_label_parts(plate, None, qr_object, subtract_text, separate_body)
     
-    # Calculate font size if auto
-    if auto_size or font_size is None:
-        font_size = calculate_auto_font_size(text, text_width, height, margin, line_wrap, margin_horizontal)
-    
     # Get font name for CadQuery (fonts are registered with OCP on startup)
     font_path = get_font_path(font_name, bold, italic)
     
+    # Calculate font size if auto
+    if auto_size or font_size is None:
+        font_size = calculate_auto_font_size(text, text_width, height, margin, line_wrap, margin_horizontal, font=font_path)
+    
     # Handle line wrapping
     if line_wrap:
-        lines = wrap_text(text, text_width - 2 * margin, font_size)
+        lines = wrap_text(text, text_width - 2 * margin_horizontal, font_size, font=font_path)
     else:
         lines = [text]
     
@@ -620,7 +705,7 @@ def arrange_labels_on_plate(
         plate_width: Build plate width
         plate_height: Build plate height
         spacing: Space between labels (default 0.5mm)
-        consistent_font_size: Use same font size for all labels (based on longest text)
+        consistent_font_size: Use same font size for all labels (the largest size that fits every text)
         **label_kwargs: Additional arguments for create_label
     
     Returns:
@@ -644,10 +729,9 @@ def arrange_labels_on_plate(
     if cols < 1 or rows < 1:
         return None, f"Label size ({label_width}x{label_height}mm) too large for plate ({plate_width}x{plate_height}mm)"
     
-    # Calculate consistent font size if requested (based on longest text)
+    # Calculate consistent font size if requested (largest size that fits every text)
     fixed_font_size = None
     if consistent_font_size and label_kwargs.get("auto_size", True):
-        longest_text = max(texts, key=len)
         margin = label_kwargs.get("margin", 2.0)
         line_wrap = label_kwargs.get("line_wrap", False)
         
@@ -666,8 +750,17 @@ def arrange_labels_on_plate(
                 label_kwargs.get("qr_size"), label_kwargs.get("qr_position", "left")
             )["text_width"]
         
-        fixed_font_size = calculate_auto_font_size(
-            longest_text, text_width, label_height, margin, line_wrap, margin_horizontal
+        font = get_font_path(
+            label_kwargs.get("font_name", "Arial"),
+            label_kwargs.get("bold", False),
+            label_kwargs.get("italic", False)
+        )
+        
+        # The text that needs the smallest size is not always the longest one
+        # (e.g. "WWW" is wider than "iiii"), so take the minimum over all texts
+        fixed_font_size = min(
+            calculate_auto_font_size(t, text_width, label_height, margin, line_wrap, margin_horizontal, font=font)
+            for t in texts
         )
     
     # One QR content per label if the QR field has as many ";"-separated entries as labels
@@ -1105,6 +1198,9 @@ def generate_preview():
         mesh_data = model_to_mesh_data(model)
         if qr_info:
             mesh_data["qr"] = qr_info
+        warning = check_text_fits(params)
+        if warning:
+            mesh_data["warning"] = warning
         return jsonify(mesh_data)
     
     except Exception as e:
@@ -1177,4 +1273,6 @@ if __name__ == "__main__":
     print("Starting server at http://localhost:5000")
     print("=" * 50)
     
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Never enable the Werkzeug debugger on a public server; opt in locally with FLASK_DEBUG=1
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(debug=debug, host="0.0.0.0", port=5000)
