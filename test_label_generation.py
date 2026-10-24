@@ -629,6 +629,102 @@ class TestCombinedOptions(unittest.TestCase):
         print("[OK] Multi-label plate with full options created successfully")
 
 
+class TestDoubleSided(unittest.TestCase):
+    """Tests for optional text on the back side."""
+    
+    def _text_bounds(self, label, name):
+        return label.objects[name].obj.val().BoundingBox()
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_single_sided_by_default(self):
+        """Test that labels have no back text unless enabled."""
+        label = create_label(text="Front", separate_body=True, back_text="Back")
+        self.assertIn("text", label.objects)
+        self.assertNotIn("text_back", label.objects)
+        print("[OK] Back text only added when double_sided is set")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_double_sided_extruded(self):
+        """Test raised back text below the plate."""
+        label = create_label(
+            text="Front", thickness=2, text_depth=0.8,
+            separate_body=True, double_sided=True, back_text="Back"
+        )
+        front = self._text_bounds(label, "text")
+        back = self._text_bounds(label, "text_back")
+        self.assertAlmostEqual(front.zmin, 1.0, places=3)
+        self.assertAlmostEqual(back.zmax, -1.0, places=3)
+        self.assertAlmostEqual(back.zmin, -1.8, places=3)
+        print("[OK] Double-sided extruded label created successfully")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_double_sided_subtracted_does_not_cut_through(self):
+        """Test engraving on both sides keeps the plate intact."""
+        label = create_label(
+            text="Front", thickness=2, text_depth=1.5, subtract_text=True,
+            separate_body=True, double_sided=True, back_text="Back"
+        )
+        front = self._text_bounds(label, "text")
+        back = self._text_bounds(label, "text_back")
+        self.assertGreater(front.zmin, back.zmax)
+        self.assertAlmostEqual(back.zmin, -1.0, places=3)
+        print("[OK] Double-sided engraving does not cut through the plate")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_back_text_defaults_to_front_text(self):
+        """Test that empty back text reuses the front text."""
+        label = create_label(text="Same", separate_body=True, double_sided=True, back_text="")
+        front = self._text_bounds(label, "text")
+        back = self._text_bounds(label, "text_back")
+        self.assertAlmostEqual(front.xlen, back.xlen, places=3)
+        print("[OK] Empty back text falls back to front text")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_double_sided_fused(self):
+        """Test double-sided label as single fused body."""
+        label = create_label(text="Front", separate_body=False, double_sided=True, back_text="Back")
+        self.assertIsInstance(label, cq.Workplane)
+        bb = label.val().BoundingBox()
+        self.assertLess(bb.zmin, -1.0)
+        self.assertGreater(bb.zmax, 1.0)
+        print("[OK] Double-sided fused label created successfully")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_double_sided_on_plate(self):
+        """Test back texts matched to labels on a build plate."""
+        assembly, error = arrange_labels_on_plate(
+            texts="A;B;C", back_texts="X;Y",
+            label_width=30, label_height=15, plate_width=200, plate_height=200,
+            double_sided=True, separate_body=True
+        )
+        self.assertIsNone(error)
+        backs = [n for n in assembly.objects if n.startswith("text_back_")]
+        self.assertEqual(len(backs), 3)  # third label falls back to its front text
+        print("[OK] Double-sided labels arranged on plate")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE and QR_AVAILABLE, "CadQuery or segno not installed")
+    def test_double_sided_with_qr(self):
+        """Test that the QR code stays on the front and back text uses the full width."""
+        label = create_label(
+            text="Front", width=60, height=20, separate_body=True,
+            qr_enabled=True, qr_content="https://example.com",
+            double_sided=True, back_text="Back"
+        )
+        self.assertIn("qr", label.objects)
+        self.assertGreater(self._text_bounds(label, "qr").zmin, 0)
+        back = self._text_bounds(label, "text_back")
+        self.assertLess(back.zmax, 0)
+        self.assertAlmostEqual(back.center.x, 0, places=0)
+        print("[OK] Double-sided label with QR code created successfully")
+    
+    def test_params_default_off(self):
+        """Test that the API defaults to single-sided."""
+        params = _extract_label_params({"text": "Test"})
+        self.assertFalse(params["double_sided"])
+        self.assertEqual(params["back_text"], "")
+        print("[OK] Double-sided is off by default")
+
+
 class TestExport(unittest.TestCase):
     """Tests for export functionality (STEP, STL, 3MF)."""
     

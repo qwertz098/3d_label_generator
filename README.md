@@ -11,6 +11,7 @@ Try out [here](https://huggingface.co/spaces/KristianKrause/3d-label-generator).
 - **Customizable Labels**: Configure width, height, thickness, corner radius
 - **Font Options**: 9 sans-serif fonts with bold/italic support (Osifont, Overpass, Roboto, Open Sans, Lato, Montserrat, Source Sans 3, Nunito, Poppins)
 - **Text Modes**: Extruded (raised) or subtracted (engraved) text
+- **Double-Sided Labels**: Optional text on the back side (own text, prefilled with the front text)
 - **Multi-Label Support**: Create multiple labels on a single build plate
 - **3D Preview**: Interactive Three.js viewer with pan, rotate, zoom
 - **Export Formats**: STEP, STL

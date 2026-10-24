@@ -332,8 +332,17 @@ def check_text_fits(params):
         texts = [t.strip() for t in params["text"].split(";") if t.strip()]
     else:
         texts = [params["text"]] if params["text"].strip() else []
+    checks = [(text, available_width) for text in texts]
     
-    for text in texts:
+    # Back texts use the same fixed size and the full label width (no QR code on the back)
+    if params.get("double_sided"):
+        if params["use_plate"]:
+            back_texts = [t.strip() for t in params.get("back_text", "").split(";")]
+        else:
+            back_texts = [params.get("back_text", "").strip()]
+        checks += [(t, params["width"] - 2 * h_margin) for t in back_texts if t]
+    
+    for text, available_width in checks:
         if params["line_wrap"]:
             lines = wrap_text(text, available_width, font_size, font)
         else:
@@ -487,7 +496,9 @@ def create_label(
     qr_content="",
     qr_size=None,
     qr_position="left",
-    qr_error_correction="M"
+    qr_error_correction="M",
+    double_sided=False,
+    back_text=None
 ):
     """
     Create a 3D label with text and an optional QR code.
@@ -516,6 +527,8 @@ def create_label(
         qr_size: QR code edge length in mm (None = fill label height minus margins)
         qr_position: Position of the QR code, "left" or "right"
         qr_error_correction: QR error correction level (L, M, Q, H)
+        double_sided: Also put text on the back side (mirrored so it reads correctly from behind)
+        back_text: Text for the back side (None or empty uses the front text)
     
     Returns:
         CadQuery assembly or workplane object
@@ -575,8 +588,16 @@ def create_label(
     else:
         margin_horizontal = margin
     
+    if double_sided and not (back_text and back_text.strip()):
+        back_text = text
+    has_back = bool(double_sided and back_text and back_text.strip())
+    
     # Ensure text depth doesn't exceed thickness
-    text_depth = min(text_depth, thickness - 0.1)
+    # (engraving on both sides must not cut through the plate)
+    if has_back and subtract_text:
+        text_depth = min(text_depth, (thickness - 0.1) / 2)
+    else:
+        text_depth = min(text_depth, thickness - 0.1)
     z_offset = thickness / 2 if not subtract_text else thickness / 2 - text_depth
     
     # QR code takes one side of the label, text gets the remaining area
@@ -591,74 +612,98 @@ def create_label(
         text_width = layout["text_width"]
         text_x = layout["text_x"]
     
-    if not text or not text.strip():
-        return _combine_label_parts(plate, None, qr_object, subtract_text, separate_body)
-    
     # Get font name for CadQuery (fonts are registered with OCP on startup)
     font_path = get_font_path(font_name, bold, italic)
     
-    # Calculate font size if auto
-    if auto_size or font_size is None:
-        font_size = calculate_auto_font_size(text, text_width, height, margin, line_wrap, margin_horizontal, font=font_path)
-    
-    # Handle line wrapping
-    if line_wrap:
-        lines = wrap_text(text, text_width - 2 * margin_horizontal, font_size, font=font_path)
-    else:
-        lines = [text]
-    
-    # Calculate total text block height
-    line_height = font_size * 1.2
-    total_text_height = len(lines) * line_height
-    
-    # Starting Y position (center the text block)
-    start_y = total_text_height / 2 - line_height / 2
-    
-    # Create text objects
-    text_objects = []
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
+    def build_text(side_text, area_width):
+        """Build text solid spanning z = 0..text_depth, centered at the origin in XY."""
+        # Calculate font size if auto
+        if auto_size or font_size is None:
+            side_font_size = calculate_auto_font_size(side_text, area_width, height, margin, line_wrap, margin_horizontal, font=font_path)
+        else:
+            side_font_size = font_size
         
-        y_pos = start_y - i * line_height
+        # Handle line wrapping
+        if line_wrap:
+            lines = wrap_text(side_text, area_width - 2 * margin_horizontal, side_font_size, font=font_path)
+        else:
+            lines = [side_text]
         
-        try:
-            text_wp = (
-                cq.Workplane("XY")
-                .text(
-                    line,
-                    fontsize=font_size,
-                    distance=text_depth,
-                    font=font_path,
-                    halign="center",
-                    valign="center"
+        # Calculate total text block height
+        line_height = side_font_size * 1.2
+        total_text_height = len(lines) * line_height
+        
+        # Starting Y position (center the text block)
+        start_y = total_text_height / 2 - line_height / 2
+        
+        # Create text objects
+        text_objects = []
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            
+            y_pos = start_y - i * line_height
+            
+            try:
+                text_wp = (
+                    cq.Workplane("XY")
+                    .text(
+                        line,
+                        fontsize=side_font_size,
+                        distance=text_depth,
+                        font=font_path,
+                        halign="center",
+                        valign="center"
+                    )
+                    .translate((0, y_pos, 0))
                 )
-                .translate((text_x, y_pos, z_offset))
-            )
-            text_objects.append(text_wp)
-        except Exception as e:
-            print(f"Error creating text '{line}': {e}")
-            # Fallback: create simple placeholder
-            continue
+                text_objects.append(text_wp)
+            except Exception as e:
+                print(f"Error creating text '{line}': {e}")
+                # Fallback: create simple placeholder
+                continue
+        
+        if not text_objects:
+            return None
+        
+        # Combine all text objects
+        combined = text_objects[0]
+        for txt in text_objects[1:]:
+            combined = combined.union(txt)
+        return combined
     
     combined_text = None
-    if text_objects:
-        # Combine all text objects
-        combined_text = text_objects[0]
-        for txt in text_objects[1:]:
-            combined_text = combined_text.union(txt)
+    if text and text.strip():
+        combined_text = build_text(text, text_width)
+        if combined_text is not None:
+            combined_text = combined_text.translate((text_x, 0, z_offset))
     
-    return _combine_label_parts(plate, combined_text, qr_object, subtract_text, separate_body)
+    back_object = None
+    if has_back:
+        # The back side has no QR code, so its text uses the full label width
+        back_object = build_text(back_text, width)
+        if back_object is not None:
+            # Flip around the Y axis so the text reads correctly when the label
+            # is turned over left-to-right; z = 0..d becomes z = -d..0
+            back_object = back_object.rotate((0, 0, 0), (0, 1, 0), 180)
+            z = -thickness / 2 if not subtract_text else -thickness / 2 + text_depth
+            back_object = back_object.translate((0, 0, z))
+    
+    return _combine_label_parts(plate, combined_text, qr_object, subtract_text, separate_body, back_object)
 
 
-def _combine_label_parts(plate, text, qr, subtract_text, separate_body):
+def _combine_label_parts(plate, text, qr, subtract_text, separate_body, text_back=None):
     """
-    Combine plate, text and QR code into the final model.
+    Combine plate, text, QR code and back text into the final model.
     
     Text and QR code are either kept as separate bodies (assembly) or fused/cut
     into the plate. In subtract mode they are cut into the plate.
     """
-    parts = [(name, obj) for name, obj in (("text", text), ("qr", qr)) if obj is not None]
+    parts = [
+        (name, obj)
+        for name, obj in (("text", text), ("qr", qr), ("text_back", text_back))
+        if obj is not None
+    ]
     if not parts:
         return plate
     
@@ -677,6 +722,7 @@ def _combine_label_parts(plate, text, qr, subtract_text, separate_body):
     colors = {
         "text": cq.Color(1.0, 0.5, 0.0),  # orange
         "qr": cq.Color(0.1, 0.1, 0.1),  # black
+        "text_back": cq.Color(1.0, 0.5, 0.0),  # orange
     }
     assembly = cq.Assembly()
     assembly.add(plate, name="plate", color=cq.Color(0.83, 0.83, 0.83))  # lightgray
@@ -693,6 +739,7 @@ def arrange_labels_on_plate(
     plate_height,
     spacing=0.5,
     consistent_font_size=False,
+    back_texts=None,
     **label_kwargs
 ):
     """
@@ -706,6 +753,9 @@ def arrange_labels_on_plate(
         plate_height: Build plate height
         spacing: Space between labels (default 0.5mm)
         consistent_font_size: Use same font size for all labels (the largest size that fits every text)
+        back_texts: Back side texts (list or semicolon-separated string), matched to texts
+            by position; missing entries fall back to the front text. Only used if
+            double_sided is set in label_kwargs.
         **label_kwargs: Additional arguments for create_label
     
     Returns:
@@ -716,6 +766,10 @@ def arrange_labels_on_plate(
     
     if not texts:
         return None, "No text provided"
+    
+    if isinstance(back_texts, str):
+        back_texts = [t.strip() for t in back_texts.split(";")]
+    back_texts = back_texts or []
     
     # Calculate how many labels fit
     cols = int((plate_width + spacing) / (label_width + spacing))
@@ -762,6 +816,14 @@ def arrange_labels_on_plate(
             calculate_auto_font_size(t, text_width, label_height, margin, line_wrap, margin_horizontal, font=font)
             for t in texts
         )
+        
+        # Back texts get the same size, so they must fit too (full width, no QR code)
+        if label_kwargs.get("double_sided"):
+            for t in back_texts:
+                if t:
+                    fixed_font_size = min(fixed_font_size, calculate_auto_font_size(
+                        t, label_width, label_height, margin, line_wrap, margin_horizontal, font=font
+                    ))
     
     # One QR content per label if the QR field has as many ";"-separated entries as labels
     qr_contents = [q.strip() for q in (label_kwargs.get("qr_content") or "").split(";")]
@@ -796,6 +858,7 @@ def arrange_labels_on_plate(
             text=text,
             width=label_width,
             height=label_height,
+            back_text=back_texts[i] if i < len(back_texts) else None,
             **create_kwargs
         )
         
@@ -1061,6 +1124,8 @@ def _extract_label_params(data):
         "qr_size": float(data.get("qrSize")) if data.get("qrSize") and not data.get("qrAutoSize", True) else None,
         "qr_position": data.get("qrPosition", "left"),
         "qr_error_correction": data.get("qrErrorCorrection", "M"),
+        "double_sided": data.get("doubleSided", False),
+        "back_text": data.get("backText", ""),
     }
     return params
 
@@ -1121,6 +1186,7 @@ def _generate_model_from_params(params):
             plate_width=params["plate_width"],
             plate_height=params["plate_height"],
             consistent_font_size=params["consistent_font_size"],
+            back_texts=params["back_text"],
             thickness=params["thickness"],
             corner_radius=params["corner_radius"],
             font_name=params["font_name"],
@@ -1140,7 +1206,8 @@ def _generate_model_from_params(params):
             qr_content=params["qr_content"],
             qr_size=params["qr_size"],
             qr_position=params["qr_position"],
-            qr_error_correction=params["qr_error_correction"]
+            qr_error_correction=params["qr_error_correction"],
+            double_sided=params["double_sided"]
         )
         if error:
             return None, error
@@ -1168,7 +1235,9 @@ def _generate_model_from_params(params):
             qr_content=params["qr_content"],
             qr_size=params["qr_size"],
             qr_position=params["qr_position"],
-            qr_error_correction=params["qr_error_correction"]
+            qr_error_correction=params["qr_error_correction"],
+            double_sided=params["double_sided"],
+            back_text=params["back_text"]
         )
         error = None
     
