@@ -25,6 +25,7 @@ from app import (
     _extract_label_params,
     _generate_model_from_params,
     _model_cache,
+    check_text_fits,
     CADQUERY_AVAILABLE,
     EXPORTS_DIR,
     FONTS_DIR
@@ -805,6 +806,96 @@ class TestExport(unittest.TestCase):
         pass
 
 
+class TestTextFit(unittest.TestCase):
+    """Tests that generated text stays within the label area."""
+    
+    def _text_bbox(self, label):
+        """Return the bounding box of the text body of a separate-body label."""
+        self.assertIsInstance(label, cq.Assembly)
+        return label.objects["text"].obj.val().BoundingBox()
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_auto_size_wide_text_fits(self):
+        """Wide glyphs (W, M) must not run past the margins."""
+        for text in ["WWWWWWWW", "MMMMMM", "Sample Label"]:
+            label = create_label(text=text, width=50, height=20, margin=2, auto_size=True)
+            bb = self._text_bbox(label)
+            self.assertLessEqual(bb.xlen, 46 + 0.5, f"'{text}' is {bb.xlen:.1f}mm wide")
+            self.assertLessEqual(bb.ylen, 16 + 0.5, f"'{text}' is {bb.ylen:.1f}mm high")
+        print("[OK] Auto-sized wide text fits within margins")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_auto_size_narrow_text_fills_width(self):
+        """Narrow glyphs should use more of the available width than the old estimate."""
+        label = create_label(text="iiiiiiiiiiii", width=50, height=20, margin=2, auto_size=True)
+        bb = self._text_bbox(label)
+        self.assertGreater(bb.xlen, 20)
+        print(f"[OK] Narrow text uses {bb.xlen:.1f}mm of 46mm")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_auto_size_line_wrap_fits_height(self):
+        """Wrapped text block must fit within the label height."""
+        label = create_label(
+            text="Ein langer Text der umbrechen soll und noch mehr Worte hat",
+            width=50, height=20, margin=2, auto_size=True, line_wrap=True
+        )
+        bb = self._text_bbox(label)
+        self.assertLessEqual(bb.xlen, 46 + 0.5)
+        self.assertLessEqual(bb.ylen, 16 + 0.5)
+        print(f"[OK] Wrapped text block is {bb.xlen:.1f} x {bb.ylen:.1f}mm")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_auto_size_respects_screw_hole_margin(self):
+        """With screw holes, text keeps clear of the hole area."""
+        label = create_label(
+            text="WWWWWWWW", width=50, height=20, margin=2, auto_size=True,
+            screw_holes=2, screw_hole_edge_distance=4
+        )
+        bb = self._text_bbox(label)
+        self.assertLessEqual(bb.xlen, 50 - 2 * 8 + 0.5)
+        print(f"[OK] Text with screw holes is {bb.xlen:.1f}mm wide")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_consistent_font_size_uses_smallest_fit(self):
+        """Consistent size must fit the widest text, not just the longest one."""
+        assembly, error = arrange_labels_on_plate(
+            texts="WWWWWWW;iiiiiiiiii", label_width=50, label_height=20,
+            plate_width=200, plate_height=200, consistent_font_size=True, margin=2
+        )
+        self.assertIsNone(error)
+        text_bb = assembly.objects["text_0"].obj.val().BoundingBox()
+        self.assertLessEqual(text_bb.xlen, 46 + 0.5)
+        print(f"[OK] Widest text on consistent plate is {text_bb.xlen:.1f}mm")
+    
+    def _params(self, **overrides):
+        params = _extract_label_params({"text": "Sample", "autoSize": False, "fontSize": 10})
+        params.update(overrides)
+        return params
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_check_text_fits_warns_on_overflow(self):
+        """Fixed font size that is too large produces a warning."""
+        warning = check_text_fits(self._params(text="Sehr langer Beschriftungstext"))
+        self.assertIsNotNone(warning)
+        self.assertIn("does not fit", warning)
+        print(f"[OK] Overflow warning: {warning}")
+    
+    def test_check_text_fits_ok(self):
+        """No warning for auto size or text that fits."""
+        self.assertIsNone(check_text_fits(self._params(autoSize=True, auto_size=True)))
+        self.assertIsNone(check_text_fits(self._params(text="Hi", font_size=5)))
+        print("[OK] No warning when text fits")
+    
+    @unittest.skipUnless(CADQUERY_AVAILABLE, "CadQuery not installed")
+    def test_check_text_fits_plate_labels(self):
+        """Each label on a plate is checked separately."""
+        warning = check_text_fits(self._params(
+            text="Hi;Sehr langer Beschriftungstext", use_plate=True
+        ))
+        self.assertIn("Sehr langer", warning)
+        print("[OK] Plate overflow warning names the offending label")
+
+
 class TestModelCaching(unittest.TestCase):
     """Tests for model caching system."""
     
@@ -1108,6 +1199,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestTextOptions))
     suite.addTests(loader.loadTestsFromTestCase(TestTextModes))
     suite.addTests(loader.loadTestsFromTestCase(TestLineWrapping))
+    suite.addTests(loader.loadTestsFromTestCase(TestTextFit))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiLabelArrangement))
     suite.addTests(loader.loadTestsFromTestCase(TestEdgeCases))
     suite.addTests(loader.loadTestsFromTestCase(TestCombinedOptions))
